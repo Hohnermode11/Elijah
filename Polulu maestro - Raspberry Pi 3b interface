@@ -1,0 +1,343 @@
+#include /*defines arguments for POSIX system functions open(),write(),read() in this case O_RDRW and O_NOCTTY*/
+
+#include /*Standard input output functions like printf*/
+
+#include /*Used for defining POSIX system functions*/
+
+#include /*Super important struct file that describes attributes of the USART port*/
+
+#include /*Used for the sqrt() and abs() function*/
+
+/**
+
+ * This command will return the error number on the Pololu Maestro Board
+
+ * The error number is made of two bytes. so the response needs to add the returned
+
+ * bytes together.
+
+ *
+
+ * To get the error we have to write 0xA1 to the controller to set it into error mode
+
+ * Then read the error
+
+ *
+
+ * @param int fd – The file descriptor to the device
+
+ * So the file descriptor is basically a non-negative integer used to identify an open file.We opened
+
+ * a file associated with terminal /dev/serial0 using the open command in main and used the fd to describe it
+
+ *
+
+ * @returns int – The number that represents the Error. See Pololu documentation for error numbers
+
+ */
+
+int maestroGetError(int fd)
+
+{
+
+unsigned char command[] = { 0xAA, 0xC, 0x21 };/* This is the pololu protocol where 0xAA is the command byte followed by two data bytes,0xC specifies the device no. which is 12 by default and 0x21 is the 0xA1 which is the command number to be sent to the maestro for getting the error no) with its LSB cleared which is protocol for data bytes sent to the maestro(more details in the maestro manual)*/
+
+if (write(fd, command, sizeof(command)) != 3)/*writes the command bytes to the open terminal file using the file descriptor.This function also returns the no. of bytes written to the file. If it is less than sizeof(command),-1 is returned and the errno is set. */
+
+{
+
+perror(“error writing”);/* This function is different from printf in that it takes the error from the stderr(standard error output stream in this case the console*/
+
+return -1;
+
+}
+
+int n = 0;
+
+unsigned char response[2];
+
+do
+
+{
+
+int ec = read(fd, response+n, 1);/*Getting the response 1 byte from the maestro*/
+
+if(ec < 0)/*See the value will never be greater than 1 but can be less than 1 byte, since maybe the bits which are ready to be transmitted come sooner than expected, but if any error -1 is returned and errno is set*/
+
+{
+
+perror(“error reading”);/*interprets errno and sends to stderr file (console)*/
+
+return ec;
+
+}
+
+if (ec == 0)/*if ec is 0 read next byte*/
+
+{
+
+continue;
+
+}
+
+n++;
+
+} while (n < 2);
+
+ 
+
+//Helpful for debugging
+
+    //printf(“Error n: %d\n”, n);
+
+    //printf(“Error secon: %d\n”, response[1]);
+
+return (int)sqrt(response[0] + 256*response[1]);/*Returns the error no. as decimal no.*/
+
+}
+
+/**
+
+ * This function is responsible for getting the current position of a servo
+
+ * which is identified by its channel. To get the current position of a channel,
+
+ * we first need to write 2 bytes to the Pololu board, where the first byte 0x90
+
+ * represents that we want to get the position, and the second byte represents the channel
+
+ * Once the write has been done, we need to read. Read returns two bytes representing one number
+
+ *
+
+ * @param int fd – The file descriptor to the device
+
+ * @param unsigned char channel – The channel number represented in 8 bit binary
+
+ *
+
+ * @returns int – The collation of two bytes as one single number.
+
+ */
+
+int maestroGetPosition(int fd, unsigned char channel)
+
+{
+
+unsigned char command[] = {0xAA, 0xC, 0x10, channel};/*check pololu maestro manual*/
+
+if(write(fd, command, sizeof(command)) == -1)/*writes the command byte to the terminal and returns -1 only if there is an error.It sets errno as well in that case*/
+
+{
+
+perror(“error writing”);/*interprets errno and also displays this message on the console by giving output to the stderr file*/
+
+return -1;
+
+}
+
+int n = 0;
+
+char response[2];
+
+do
+
+{
+
+int ec = read(fd, response+n, 1);/*once the maestro gets the command bytes it sends the 2 response bytes which indicate current servo position*/
+
+if(ec < 0)
+
+{
+
+perror("error reading");
+
+return ec;
+
+}
+
+if (ec == 0)
+
+{
+
+continue;
+
+}
+
+n++;
+
+} while (n < 2);
+
+return response[0] + 256*response[1];
+
+}
+
+/**
+
+ * This function writes a new target to a given servo channel, To set a servo target
+
+ * the Pololu board requires 4 byte command where:
+
+ *  byte1 – 0x84 – Telling the board that we are sending it set command
+
+ *  byte2 – unsigned char – Telling the board which channel to set,
+
+ *  byte3-byte4 – The collation of the numbers represent the target, as 2 bits are required to reach bigger values
+
+ *
+
+ * Its worth reading more on the Pololu documentation about the target bitsetting as you require
+
+ * bit shifting to provide a valid servo target command
+
+ *
+
+ * @param int fd – The file descriptor to the device
+
+ * @param unsigned char channel – The channel number represented in 8 bit binary
+
+ * @param unsigned short target – We can represent two bytes in a unsigned short target.
+
+ *
+
+ * @returns int – The collation of two bytes as one single number.
+
+ */
+
+int maestroSetTarget(int fd, unsigned char channel, unsigned short target)
+
+{
+
+unsigned char command[] = {0xAA, 0xC, 0x04, channel, target & 0x7F, target >> 7 & 0x7F}; /*target & 0x7F represent the target low bits 0-6 and targer >>7(right shifted 7 times and )& with 0x7f represents the 7-13 bits. I think & with 0x7E clears the MSB and makes it a data byte) */
+
+if (write(fd, command, sizeof(command)) == -1)
+
+{
+
+perror(“error writing”);
+
+return -1;
+
+}
+
+return 0;
+
+}
+
+/*
+
+ * Open Device,
+
+ * Clear errors if any
+
+ * Get and print current position
+
+ * Set and print current position given the last position
+
+ *
+
+ * @returns int – Returns -1 on error, otherwise 0
+
+ */
+
+int main()
+
+{
+
+// Open the Maestro’s virtual COM port.
+
+const char * device = “/dev/serial0”;  /*This assigns a pointer to point to the file path that is associated with the UART terminal(LINUX)*/
+
+int fd = open(device, O_RDWR | O_NOCTTY);/*Opens a file associated with a terminal and assigns a digit to the file descriptor which acts as a uhh descriptor for the file*/
+
+ 
+
+struct termios options;/*Creates a structure called options which has all the members used to describe properties of the UART according to the OS (see the POSIX set of rules). What this basically means is all the characteristics for the UART port(board pins 8 and 10) are already set in the OS, we are about to modify them for the use of our maestro device*/
+
+tcgetattr(fd, &options);/*Gets all the attributes of the UART terminal from the OS*/
+
+cfsetispeed(&options, B9600);/*Sets the input baudrate to 9600*/
+
+cfsetospeed(&options, B9600);/*Sets the Output baud rate to 9600*/
+
+options.c_cflag &= ~PARENB;/*Turns off parity bit.We &= instead of = since the control flag member has other attributes which we don’t want to change*/
+
+options.c_cflag &= ~CSTOPB;/*Turns of 2 stopbits, so only 1 is received*/
+
+options.c_cflag &= ~CSIZE;/*Turns of standard size(I think)*/
+
+options.c_cflag |= CS8;/*Sets the byte size for transmission*/
+
+// no flow control
+
+options.c_cflag &= ~CRTSCTS;/*Turns of the RTS and CTS signals which are handshaking signals,I didn’t read in the maestro that the device had this option*/
+
+options.c_cflag |= CREAD | CLOCAL;  // turn on READ(receiver) & ignore ctrl lines(used if a modem was connected)
+
+options.c_iflag &= ~(IXON | IXOFF | IXANY); // turn off s/w flow ctrl/*I assume these are flags used if a console was connected as a terminal.Because it is used to send stop signals from the terminal and from the computer to the terminal etc.*/
+
+options.c_lflag &= ~(ICANON | ECHO | ECHOE | ISIG); // make raw/*Description of this is given in the Donald Lewine guide on page 156.These are application specific flags not required by maestro but maybe by another device. Canonical mode means process bytes as lines,ECHO means send the same characters back down the line,ECHOE causes the ERASE command to erase the last command from the console,ISIG means that special characters INTR,QUIT and SUSP have significance which they don’t in the maestro*/
+
+options.c_oflag &= ~OPOST; // make raw/*if set it means output would be processed in a implementation based manner(probably user defined),since its off the data comes as is* /
+
+// see: http://unixwiz.net/techtips/termios-vmin-vtime.html
+
+options.c_cc[VMIN]  = 0;
+
+options.c_cc[VTIME] = 20;/*If VMIN=0,a read command is satisfied as soon as a byte is received or the TIME amount in seconds is satisfied,this may be set as the UART does not have the receiving timeout interrupt(although shamirji used the PL011 UART so I don’t know why he would use this)*/
+
+if (tcsetattr(fd, TCSANOW, &options) < 0)/*this function sets the attributes we just assigned above,TCSANOW is an optional argument meaning changes happen immediately*/
+
+{
+
+perror(“init_serialport: Couldn’t set term attributes”);/*writes the message to stderr,in our case the console output/LX terminal*/
+
+return -1;
+
+}
+
+if (fd == -1)
+
+{
+
+perror(device);
+
+return -1;
+
+}
+
+int channel = 3;
+
+int error = maestroGetError(fd);
+
+fprintf(stderr, “Error is %d.\n”, error);
+
+if (error > 0)
+
+fprintf(stderr, “Error is %d.\n”, error);
+
+maestroSetTarget(fd, 1, 5000);
+
+ 
+
+int position = maestroGetPosition(fd, channel);
+
+printf(“Current position is %d.\n”, position);
+
+int target = (position < 6000) ? 7000 : 5000;/*If target is less than 6000,set it to 7000 or else set it to 5000*/
+
+printf(“Setting target to %d (%d us).\n”, target, target/4);/*Depending on the above condition, the target is set and its value in quarter-microseconds is given in brackets */
+
+maestroSetTarget(fd, channel, target);/*sends the target and channel value to the file descriptor no. associated with the UART terminal,check the settarget function above for details*/
+
+ 
+
+position = maestroGetPosition(fd, channel);/*Using the above stated function before main the position value is received as an integer*/
+
+printf(“Current position is %d.\n”, position);/*Position printed to LXterminal or console*/
+
+close(fd);
+
+return 0;
+
+}
